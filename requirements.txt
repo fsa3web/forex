@@ -84,7 +84,6 @@ soupsieve==2.6
 statsmodels==0.14.0
 streamlit==1.28.2
 ta==0.10.2
-TA-Lib==0.4.32
 tenacity==8.5.0
 tensorboard==2.17.1
 tensorboard-data-server==0.7.2
