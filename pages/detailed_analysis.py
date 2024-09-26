@@ -61,8 +61,9 @@ def generate_advanced_indicators(df):
     bbands = df.ta.bbands(close=df['Close'], length=20, std=2)
     df['BB_upper'], df['BB_middle'], df['BB_lower'] = bbands['BBU_20_2.0'], bbands['BBM_20_2.0'], bbands['BBL_20_2.0']
 
-    # Parabolic SAR
-    df['SAR'] = df.ta.psar(high=df['High'], low=df['Low'], close=df['Close'], af=0.02, max_af=0.2)
+    # Parabolic SAR (SAR göstergesi birden fazla sütun döndürebilir, doğru sütunu seçiyoruz)
+    psar = df.ta.psar(high=df['High'], low=df['Low'], close=df['Close'], af=0.02, max_af=0.2)
+    df['SAR'] = psar['PSARl_0.02_0.2']  # SAR sütunlarından birini seçiyoruz
 
     # Stochastic Oscillator (Stoch)
     stoch = df.ta.stoch(high=df['High'], low=df['Low'], close=df['Close'], k=14, d=3)
