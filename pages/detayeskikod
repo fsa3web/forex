@@ -1,0 +1,290 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+import logging
+import traceback
+from sklearn.preprocessing import MinMaxScaler
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, LSTM, Dropout, Input
+from tensorflow.keras.callbacks import EarlyStopping
+import talib  # TA-Lib kütüphanesi
+from data_fetcher import get_forex_data, validate_forex_data
+from technical_analysis import calculate_indicators
+from signal_generator import generate_signals
+from chart_visualizer import create_chart
+from utils import format_number
+
+logger = logging.getLogger(__name__)
+
+# Keras modeli oluştur ve tanımla
+def create_keras_model(input_shape):
+    model = Sequential()
+    model.add(Input(shape=input_shape))  # Input katmanı
+    model.add(LSTM(64, activation='relu', return_sequences=True))  # LSTM katmanı
+    model.add(Dropout(0.2))  # Dropout ekleyerek overfitting'i önlüyoruz
+    model.add(LSTM(64, activation='relu'))  # İkinci LSTM katmanı
+    model.add(Dropout(0.2))  # Dropout
+    model.add(Dense(50, activation='relu'))  # Dense katmanları ekleniyor
+    model.add(Dense(1))  # Çıkış katmanı
+    model.compile(optimizer='adam', loss='mean_squared_error')
+    return model
+
+# Tahmin fonksiyonu
+def generate_keras_prediction(model, X):
+    return model.predict(X[-1].reshape(1, X.shape[1], 1))[0][0]
+
+# Gelişmiş teknik göstergeler ve gecikmeli değişkenler ekleniyor
+def generate_ta_indicators(df):
+    df['RSI'] = talib.RSI(df['Close'], timeperiod=14)
+    df['MACD'], df['MACD_Signal'], df['MACD_Hist'] = talib.MACD(df['Close'], fastperiod=12, slowperiod=26, signalperiod=9)
+    df['SMA20'] = talib.SMA(df['Close'], timeperiod=20)
+    df['SMA50'] = talib.SMA(df['Close'], timeperiod=50)
+    df['EMA20'] = talib.EMA(df['Close'], timeperiod=20)
+    df['EMA50'] = talib.EMA(df['Close'], timeperiod=50)
+    df['ATR'] = talib.ATR(df['High'], df['Low'], df['Close'], timeperiod=14)  # Volatilite göstergesi
+    # Gecikmeli değişkenler ekleniyor
+    df['Close_Lag1'] = df['Close'].shift(1)
+    df['Close_Lag2'] = df['Close'].shift(2)
+    return df.dropna()  # Null değerleri çıkartıyoruz
+
+def interpret_ta_indicators(ta_indicators):
+    rsi = ta_indicators['RSI']
+    macd = ta_indicators['MACD']
+
+    rsi_interpretation = "Neutral"
+    if rsi > 70:
+        rsi_interpretation = "Overbought (Bearish Signal)"
+    elif rsi < 30:
+        rsi_interpretation = "Oversold (Bullish Signal)"
+
+    macd_interpretation = "Neutral"
+    if macd > 0:
+        macd_interpretation = "Bullish"
+    else:
+        macd_interpretation = "Bearish"
+
+    return {"RSI Interpretation": rsi_interpretation, "MACD Interpretation": macd_interpretation}
+
+def generate_prediction(df, pair, timeframe, keras_model, scaler):
+    try:
+        logger.info(f"Starting prediction generation for {pair} on {timeframe} timeframe")
+
+        if timeframe == '15m':
+            resampled_df = df.resample('15min').last().dropna()  # 15 dakika dilimi için '15T' kullanılır
+            min_data_points = 50
+        elif timeframe == '1h':
+            resampled_df = df.resample('1h').last().dropna()  # 1 saatlik dilim için
+            min_data_points = 100
+        elif timeframe == '4h':
+            resampled_df = df.resample('4h').last().dropna()  # 4 saatlik dilim için
+            min_data_points = 200
+        else:
+            return {"error": f"Invalid timeframe: {timeframe}"}
+
+        resampled_df = resampled_df.reset_index()
+
+        required_columns = ['Close', 'MACD', 'RSI', 'SMA20', 'SMA50', 'EMA20', 'EMA50', 'ATR', 'Close_Lag1', 'Close_Lag2']
+        missing_columns = [col for col in required_columns if col not in resampled_df.columns]
+        if missing_columns:
+            error_msg = f"Missing required columns for {pair}: {', '.join(missing_columns)}"
+            logger.error(error_msg)
+            return {"error": error_msg}
+
+        if len(resampled_df) < min_data_points:
+            logger.warning(f"Insufficient data for {pair} on {timeframe} timeframe.")
+            return {"insufficient_data": True}
+
+        features = ['Close', 'MACD', 'RSI', 'SMA20', 'SMA50', 'EMA20', 'EMA50', 'ATR', 'Close_Lag1', 'Close_Lag2']
+        X = resampled_df[features].values[:-1]
+        y = resampled_df['Close'].shift(-1).dropna().values
+
+        if len(y) == 0 or len(X) == 0:
+            return {"error": "Not enough data for training Keras model."}
+
+        # Veriyi ölçeklendirme
+        X_scaled = scaler.fit_transform(X)
+        y_scaled = scaler.fit_transform(y.reshape(-1, 1))
+
+        X_scaled = X_scaled.reshape(-1, len(features), 1)
+
+        # Early Stopping kullanarak model eğitimi
+        early_stopping = EarlyStopping(monitor='loss', patience=5, restore_best_weights=True)
+        keras_model.fit(X_scaled, y_scaled, epochs=100, batch_size=32, verbose=0, callbacks=[early_stopping], validation_split=0.2)
+
+        keras_prediction_scaled = generate_keras_prediction(keras_model, X_scaled)
+        keras_prediction = scaler.inverse_transform([[keras_prediction_scaled]])[0][0]
+
+        pandas_prediction = resampled_df['Close'].rolling(window=20).mean().iloc[-1]
+
+        last_close = resampled_df['Close'].iloc[-1]
+        sentiment = "Bullish" if keras_prediction > last_close else "Bearish"
+        pandas_sentiment = "Bullish" if pandas_prediction > last_close else "Bearish"
+        probability = abs(keras_prediction - last_close) / last_close * 100
+
+        ta_indicators = resampled_df.iloc[-1][['RSI', 'MACD', 'SMA20', 'SMA50', 'EMA20', 'EMA50']]
+        ta_interpretations = interpret_ta_indicators(ta_indicators)
+
+        std_dev = resampled_df['Close'].std()
+        lower_ci = keras_prediction - (1.96 * std_dev)
+        upper_ci = keras_prediction + (1.96 * std_dev)
+        volatility = resampled_df['Close'].pct_change().std() * np.sqrt(252)
+
+        X_mean = X_scaled.mean(axis=0).reshape(-1)
+        X_last = X_scaled[-1].reshape(-1)
+        feature_importance = pd.DataFrame({
+            'feature': features,
+            'importance': np.abs(X_mean - X_last)
+        }).sort_values('importance', ascending=False)
+
+        logger.info(f"Prediction generated successfully for {pair} on {timeframe} timeframe")
+        return {
+            "keras_prediction": keras_prediction,
+            "pandas_prediction": pandas_prediction,
+            "sentiment": sentiment,
+            "pandas_sentiment": pandas_sentiment,
+            "probability": probability,
+            "lower_ci": lower_ci,
+            "upper_ci": upper_ci,
+            "volatility": volatility,
+            "feature_importance": feature_importance,
+            "ta_indicators": ta_indicators,
+            "ta_interpretations": ta_interpretations
+        }
+    except Exception as e:
+        logger.error(f"Error in generate_prediction for {pair} on {timeframe}: {str(e)}")
+        logger.error(traceback.format_exc())
+        return {"error": str(e)}
+
+def show_analysis():
+    try:
+        logger.info("Starting detailed analysis")
+        if 'selected_pair' not in st.session_state:
+            logger.error("No currency pair selected for detailed analysis")
+            st.error("No currency pair selected. Please select a pair.")
+            return
+
+        pair = st.session_state.selected_pair
+        logger.info(f"Analyzing {pair}")
+        st.title(f"Detailed Forex Analysis for {pair}")
+
+        with st.spinner(f"Loading data for {pair}..."):
+            try:
+                data = get_forex_data(pair, period="60d", interval="15m")  # 15 dakika dilimi ile veri çekiyoruz
+                if data is None or data.empty:
+                    st.error(f"Failed to fetch data for {pair}. Please try again later.")
+                    logger.error(f"Failed to fetch data for {pair}")
+                    return
+            except Exception as e:
+                st.error(f"An error occurred while fetching data: {str(e)}")
+                logger.error(f"Error fetching data: {str(e)}")
+                return
+
+            if validate_forex_data(data, pair):
+                logger.debug(f"Data fetched for {pair}. Shape: {data.shape}")
+                try:
+                    df = calculate_indicators(data)
+                    df = generate_ta_indicators(df)  # TA-Lib ile teknik göstergeler ekleniyor
+                    signals = generate_signals(df)
+
+                    # Veri ölçeklendirme
+                    scaler = MinMaxScaler(feature_range=(0, 1))
+
+                    # Modeli oluştur
+                    keras_model = create_keras_model((len(df.columns), 1))
+
+                    timeframes = ['15m', '1h', '4h']  # 15 dakika, 1 saat ve 4 saatlik tahminler
+                    predictions = {tf: generate_prediction(df, pair, tf, keras_model, scaler) for tf in timeframes}
+
+                    fig = create_chart(df, pair)
+                    st.plotly_chart(fig, use_container_width=True)
+
+                    current_price = df['Close'].iloc[-1]
+                    st.metric("Current Price", format_number(current_price))
+
+                    col1, col2, col3 = st.columns(3)
+                    for i, timeframe in enumerate(timeframes):
+                        col = [col1, col2, col3][i]
+                        prediction_data = predictions[timeframe]
+                        if "error" not in prediction_data:
+                            if prediction_data.get("insufficient_data", False):
+                                col.warning(f"Insufficient data for {timeframe} prediction")
+                            else:
+                                keras_prediction = prediction_data["keras_prediction"]
+                                pandas_prediction = prediction_data["pandas_prediction"]
+                                sentiment = prediction_data["sentiment"]
+                                pandas_sentiment = prediction_data["pandas_sentiment"]
+                                probability = prediction_data["probability"]
+
+                                delta_color = 'normal' if sentiment == "Bullish" else 'inverse'
+                                delta = f"{probability:.2f}%"
+
+                                col.metric(
+                                    f"{timeframe} Keras Prediction",
+                                    format_number(keras_prediction),
+                                    delta,
+                                    delta_color=delta_color
+                                )
+
+                                col.write(f"Keras Sentiment: {sentiment}")
+                                col.markdown("---")
+
+                                col.metric(
+                                    f"{timeframe} Pandas Prediction",
+                                    format_number(pandas_prediction)
+                                )
+
+                                col.write(f"Pandas Sentiment: {pandas_sentiment}")
+
+                                col.write(f"TA-Lib Indicators for {timeframe}:")
+                                for indicator, value in prediction_data['ta_indicators'].items():
+                                    col.write(f"  {indicator}: {format_number(value)}")
+                                
+                                col.write("TA-Lib Interpretations:")
+                                for interpretation, comment in prediction_data['ta_interpretations'].items():
+                                    col.write(f"  {interpretation}: {comment}")
+
+                                lower_ci = prediction_data["lower_ci"]
+                                upper_ci = prediction_data["upper_ci"]
+                                volatility = prediction_data["volatility"]
+                                feature_importance = prediction_data["feature_importance"]
+
+                                col.write(f"Confidence Interval: [{format_number(lower_ci)} - {format_number(upper_ci)}]")
+                                col.write(f"Volatility: {volatility:.4f}")
+
+                                col.write("Feature Importance:")
+                                for _, row in feature_importance.head(5).iterrows():
+                                    col.write(f"  {row['feature']}: {row['importance']:.4f}")
+                        else:
+                            col.error(f"Failed to generate prediction for {timeframe}: {prediction_data['error']}")
+
+                    if signals:
+                        st.subheader("Trading Signals")
+                        for signal in signals:
+                            st.write(f"**{signal['action']}** at {format_number(signal['price'])}")
+                            st.write(f"Stop Loss: {format_number(signal['stop_loss'])}")
+                            st.write(f"Take Profit 1: {format_number(signal['tp1'])}")
+                            st.write(f"Take Profit 2: {format_number(signal['tp2'])}")
+                            st.write(f"Take Profit 3: {format_number(signal['tp3'])}")
+                    else:
+                        st.info("No trading signals at the moment.")
+
+                except Exception as e:
+                    st.error(f"An error occurred while processing data for {pair}. Please try again later.")
+                    logger.error(f"Error processing data for {pair}: {str(e)}")
+                    logger.error(traceback.format_exc())
+            else:
+                st.error(f"Failed to fetch valid data for {pair}. Please try again later.")
+                logger.error(f"Failed to fetch valid data for {pair}")
+
+        if st.button("Back to Main Page"):
+            logger.info("Back to Main Page button clicked")
+            st.session_state.current_page = "main"
+            st.experimental_rerun()
+    except Exception as e:
+        logger.error(f"Error in show_analysis: {str(e)}")
+        logger.error(traceback.format_exc())
+        st.error(f"An error occurred while analyzing {pair}. Please try again later.")
+
+if __name__ == "__main__":
+    show_analysis()
