@@ -24,11 +24,11 @@ st.set_page_config(page_title="Forex Day Trading Signal", layout="wide")
 
 # Title and introduction
 st.title("Forex Day Trading Signal")
-st.write("Real-time analysis and trading sihhgnals for currency pairs")
+st.write("Real-time analysis and trading signals for currency pairs")
 
 # Initialize Telegram Notifier
-telegram_token = st.secrets["TELEGRAM_BOT_TOKEN"]
-telegram_chat_id = st.secrets["TELEGRAM_CHAT_ID"]
+telegram_token = "your-telegram-bot-token-here"  # Telegram bot token here
+telegram_chat_id = "your-telegram-chat-id-here"  # Telegram chat ID here
 telegram_notifier = TelegramNotifier(telegram_token)
 
 # Function to load signals from JSON file
