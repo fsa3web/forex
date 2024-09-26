@@ -8,7 +8,7 @@ from sklearn.preprocessing import MinMaxScaler
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, LSTM, Dropout, Input
 from tensorflow.keras.callbacks import EarlyStopping
-import talib  # TA-Lib kütüphanesi
+import pandas_ta as ta  # TA-Lib yerine pandas-ta kütüphanesi
 from data_fetcher import get_forex_data, validate_forex_data
 from technical_analysis import calculate_indicators
 from signal_generator import generate_signals
@@ -55,25 +55,25 @@ def calculate_ichimoku(df):
 
     return df
 
-# Daha gelişmiş teknik göstergeler ekleniyor
+# Daha gelişmiş teknik göstergeler ekleniyor (pandas-ta kullanarak)
 def generate_advanced_indicators(df):
     # Bollinger Bantları (Upper, Middle, Lower)
-    df['BB_upper'], df['BB_middle'], df['BB_lower'] = talib.BBANDS(df['Close'], timeperiod=20, nbdevup=2, nbdevdn=2, matype=0)
+    df['BB_upper'], df['BB_middle'], df['BB_lower'] = df.ta.bbands(close=df['Close'], length=20, std=2)
 
     # Parabolic SAR
-    df['SAR'] = talib.SAR(df['High'], df['Low'], acceleration=0.02, maximum=0.2)
+    df['SAR'] = df.ta.psar(high=df['High'], low=df['Low'], close=df['Close'], af=0.02, max_af=0.2)
 
     # Stochastic Oscillator (Stoch)
-    df['Stoch_k'], df['Stoch_d'] = talib.STOCH(df['High'], df['Low'], df['Close'], fastk_period=14, slowk_period=3, slowd_period=3)
+    df['Stoch_k'], df['Stoch_d'] = df.ta.stoch(high=df['High'], low=df['Low'], close=df['Close'], k=14, d=3)
 
     # Commodity Channel Index (CCI)
-    df['CCI'] = talib.CCI(df['High'], df['Low'], df['Close'], timeperiod=20)
+    df['CCI'] = df.ta.cci(high=df['High'], low=df['Low'], close=df['Close'], length=20)
 
     # Momentum
-    df['Momentum'] = talib.MOM(df['Close'], timeperiod=10)
+    df['Momentum'] = df.ta.mom(close=df['Close'], length=10)
 
     # ATR (Volatilite)
-    df['ATR'] = talib.ATR(df['High'], df['Low'], df['Close'], timeperiod=14)
+    df['ATR'] = df.ta.atr(high=df['High'], low=df['Low'], close=df['Close'], length=14)
 
     # Ichimoku Bileşenleri
     df = calculate_ichimoku(df)
