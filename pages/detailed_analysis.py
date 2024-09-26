@@ -8,7 +8,7 @@ from sklearn.preprocessing import MinMaxScaler
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, LSTM, Dropout, Input
 from tensorflow.keras.callbacks import EarlyStopping
-import pandas_ta as ta  # TA-Lib yerine pandas-ta kütüphanesi
+import pandas_ta as ta  # pandas-ta kütüphanesi kullanılıyor
 from data_fetcher import get_forex_data, validate_forex_data
 from technical_analysis import calculate_indicators
 from signal_generator import generate_signals
@@ -55,16 +55,18 @@ def calculate_ichimoku(df):
 
     return df
 
-# Daha gelişmiş teknik göstergeler ekleniyor (pandas-ta kullanarak)
+# Daha gelişmiş teknik göstergeler ekleniyor
 def generate_advanced_indicators(df):
     # Bollinger Bantları (Upper, Middle, Lower)
-    df['BB_upper'], df['BB_middle'], df['BB_lower'] = df.ta.bbands(close=df['Close'], length=20, std=2)
+    bbands = df.ta.bbands(close=df['Close'], length=20, std=2)
+    df['BB_upper'], df['BB_middle'], df['BB_lower'] = bbands['BBU_20_2.0'], bbands['BBM_20_2.0'], bbands['BBL_20_2.0']
 
     # Parabolic SAR
     df['SAR'] = df.ta.psar(high=df['High'], low=df['Low'], close=df['Close'], af=0.02, max_af=0.2)
 
     # Stochastic Oscillator (Stoch)
-    df['Stoch_k'], df['Stoch_d'] = df.ta.stoch(high=df['High'], low=df['Low'], close=df['Close'], k=14, d=3)
+    stoch = df.ta.stoch(high=df['High'], low=df['Low'], close=df['Close'], k=14, d=3)
+    df['Stoch_k'], df['Stoch_d'] = stoch['STOCHk_14_3_3'], stoch['STOCHd_14_3_3']
 
     # Commodity Channel Index (CCI)
     df['CCI'] = df.ta.cci(high=df['High'], low=df['Low'], close=df['Close'], length=20)
